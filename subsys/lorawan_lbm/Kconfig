@@ -10,7 +10,8 @@ menuconfig LORA_BASICS_MODEM
 	select LORA_BASICS_MODEM_DRIVERS_RAL_RALF
 	select REBOOT
 	# depends on REQUIRES_FULL_LIBC
-	depends on TEST_RANDOM_GENERATOR || ENTROPY_HAS_DRIVER
+	# depends on TEST_RANDOM_GENERATOR || ENTROPY_HAS_DRIVER
+	select ENTROPY_GENERATOR
 	select ZEPHYR_LORA_BASICS_MODEM_MODULE
 	depends on !LORAWAN
 	help
@@ -199,7 +200,7 @@ config LORA_BASICS_MODEM_FUOTA_MAX_NB_OF_FRAGMENTS_CONFIG
 	bool "Enable configuration of the maximum number of fragments for LBM FUOTA"
 	default n
 
-config LORA_BASICS_MODEM_FUOTA_FRAG_MAX_NB
+config LORA_BASICS_MODEM_FUOTA_MAX_NB_OF_FRAGMENTS
 	int "The maximum number of fragments for LBM FUOTA"
 	depends on LORA_BASICS_MODEM_FUOTA_MAX_NB_OF_FRAGMENTS_CONFIG
 

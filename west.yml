@@ -4,9 +4,16 @@
 manifest:
   projects:
     - name: zephyr
-      url: https://github.com/zephyrproject-rtos/zephyr
-      revision: v3.7.0
-      import: true
+      url: https://github.com/iotright/iotr-zephyr
+      revision: main
+      import:
+        # By using name-allowlist we can clone only the modules that are
+        # strictly needed by the application.
+        name-allowlist:
+          - cmsis_6 # required by the ARM port
+          - hal_nordic
+          - mcuboot
+          - mbedtls
 
     - name: lora_basics_modem
       path: modules/lib/lora_basics_modem

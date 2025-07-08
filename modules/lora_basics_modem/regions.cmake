@@ -29,4 +29,4 @@ zephyr_library_sources_ifdef(CONFIG_LORA_BASICS_MODEM_REGION_IN_865 ${LBM_SMTC_R
 zephyr_library_sources_ifdef(CONFIG_LORA_BASICS_MODEM_REGION_KR_920 ${LBM_SMTC_REGIONS_DIR}/region_kr_920.c)
 zephyr_library_sources_ifdef(CONFIG_LORA_BASICS_MODEM_REGION_RU_864 ${LBM_SMTC_REGIONS_DIR}/region_ru_864.c)
 zephyr_library_sources_ifdef(CONFIG_LORA_BASICS_MODEM_REGION_US_915 ${LBM_SMTC_REGIONS_DIR}/region_us_915.c)
-zephyr_library_sources_ifdef(CONFIG_LORA_BASICS_MODEM_REGION_US_915 ${LBM_SMTC_REGIONS_DIR}/region_ww2g4.c)
+zephyr_library_sources_ifdef(CONFIG_LORA_BASICS_MODEM_REGION_WW_2G4 ${LBM_SMTC_REGIONS_DIR}/region_ww2g4.c)
