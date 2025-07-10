@@ -157,7 +157,7 @@ static void prv_smtc_modem_hal_timer_handler(struct k_timer *timer)
 };
 
 void smtc_modem_hal_start_timer(const uint32_t milliseconds, void (*callback)(void *context),
-				void *context)
+	void *context)
 {
 	prv_smtc_modem_hal_timer_callback = callback;
 	prv_smtc_modem_hal_timer_context = context;
@@ -198,13 +198,13 @@ void smtc_modem_hal_enable_modem_irq(void)
 #ifdef CONFIG_LORA_BASICS_MODEM_USER_STORAGE_IMPL
 
 void smtc_modem_hal_context_restore(const modem_context_type_t ctx_type, uint32_t offset,
-				    uint8_t *buffer, const uint32_t size)
+	uint8_t *buffer, const uint32_t size)
 {
 	prv_hal_cb->context_restore(ctx_type, offset, buffer, size);
 }
 
 void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t offset,
-				  const uint8_t *buffer, const uint32_t size)
+	const uint8_t *buffer, const uint32_t size)
 {
 	prv_hal_cb->context_store(ctx_type, offset, buffer, size);
 }
@@ -252,12 +252,31 @@ bool smtc_modem_hal_crashlog_get_status(void)
 
 const struct flash_area *context_flash_area;
 
+
+#define OTA_IMAGE_AREA FIXED_PARTITION_ID(slot1_partition)
+
+const struct flash_area *ota_flash_area;
+
+
 #define ADDR_LORAWAN_CONTEXT_OFFSET 0  // in case of multistack the size of the lorawan context shall be extended
 #define ADDR_MODEM_KEY_CONTEXT_OFFSET 256
 #define ADDR_MODEM_CONTEXT_OFFSET 512
 #define ADDR_SECURE_ELEMENT_CONTEXT_OFFSET 768
 #define ADDR_CRASHLOG_CONTEXT_OFFSET 4096
 #define ADDR_STORE_AND_FORWARD_CONTEXT_OFFSET 8192
+
+
+// --- Static variables for page buffering ---
+
+// Use a buffer exactly the size of a flash page. For nRF52840, this is 4096 bytes.
+#define FLASH_PAGE_SIZE 4096
+static uint8_t ota_page_buffer[FLASH_PAGE_SIZE];
+
+// Variable to track which page number is currently loaded in the buffer.
+// Initialize to an invalid page number.
+static uint32_t current_page_in_buffer = UINT32_MAX;
+
+
 
 static void flash_init(void)
 {
@@ -273,7 +292,7 @@ static void flash_init(void)
 
 static uint32_t priv_hal_context_address(const modem_context_type_t ctx_type, uint32_t offset)
 {
-	switch( ctx_type )
+	switch (ctx_type)
 	{
 	case CONTEXT_MODEM:
 		return ADDR_MODEM_CONTEXT_OFFSET + offset;
@@ -293,11 +312,85 @@ static uint32_t priv_hal_context_address(const modem_context_type_t ctx_type, ui
 	CODE_UNREACHABLE;
 }
 
+// --- Helper function to flush the buffered page to flash ---
+static int flush_ota_page(void) {
+	int rc = 0;
+
+	if (current_page_in_buffer != UINT32_MAX) {
+		// Calculate the physical write address in the flash partition
+		uint32_t write_addr = current_page_in_buffer * FLASH_PAGE_SIZE;
+		LOG_INF("Flushing page %u to flash addr 0x%X", current_page_in_buffer, write_addr);
+
+		// 1. ERASE the entire page first.
+		rc = flash_area_erase(ota_flash_area, write_addr, FLASH_PAGE_SIZE);
+		if (rc != 0) {
+			LOG_ERR("Failed to ERASE page %u! (%d)", current_page_in_buffer, rc);
+			return rc;
+		}
+
+		// 2. WRITE the updated buffer to the now-erased page.
+		rc = flash_area_write(ota_flash_area, write_addr, ota_page_buffer, FLASH_PAGE_SIZE);
+		if (rc != 0) {
+			LOG_ERR("Failed to write page %u to flash! (%d)", current_page_in_buffer, rc);
+		}
+		// Invalidate the buffer since it has been written
+		current_page_in_buffer = UINT32_MAX;
+	}
+	return rc;
+}
+
+void smtc_modem_hal_fuota_finished() {
+	LOG_INF("FUOTA transfer complete. Finalizing write.");
+	flush_ota_page();
+}
+
+void smtc_modem_hal_fuota_frag_init() {
+
+
+	current_page_in_buffer = UINT32_MAX; // Reset buffer state
+
+	int err = flash_area_open(OTA_IMAGE_AREA, &ota_flash_area);
+	if (err != 0) {
+		LOG_ERR("Could not open flash area for ota (%d)", err);
+	}
+	LOG_INF("Opened flash area of size %d for ota", ota_flash_area->fa_size);
+	LOG_DBG("Starting to erase flash area");
+
+	err = flash_area_erase(ota_flash_area, 0, ota_flash_area->fa_size);
+
+	LOG_DBG("Finished erasing flash area");
+}
+
+
 void smtc_modem_hal_context_restore(const modem_context_type_t ctx_type, uint32_t offset,
-				    uint8_t *buffer, const uint32_t size)
+	uint8_t *buffer, const uint32_t size)
 {
 	int rc;
 	uint32_t real_offset;
+
+	if (ctx_type == CONTEXT_FUOTA) {
+
+		 // Determine which page the requested data starts on
+		uint32_t target_page = offset / FLASH_PAGE_SIZE;
+
+		//  Check if the requested data is in our RAM buffer ---
+		if ((current_page_in_buffer != UINT32_MAX) && (target_page == current_page_in_buffer)) {
+
+			uint32_t offset_in_page = offset % FLASH_PAGE_SIZE;
+
+			if ((offset_in_page + size) <= FLASH_PAGE_SIZE) {
+				// LOG_DBG("Serving FUOTA read for %u bytes from RAM buffer (page %u)", size, target_page);
+				memcpy(buffer, ota_page_buffer + offset_in_page, size);
+				return;
+			}
+		}
+		// --- If not in the buffer, read from the physical flash ---
+		rc = flash_area_read(ota_flash_area, offset, buffer, size);
+		if (rc != 0) {
+			LOG_ERR("Failed to read buffer from ota flash area(%d)", rc);
+		}
+		return;
+	}
 
 	flash_init();
 	real_offset = priv_hal_context_address(ctx_type, offset);
@@ -310,9 +403,64 @@ uint8_t page_buffer[4096];
 // We assume (FIXME:) that stores are only on one sector.
 // FIXME: we assume page size = 4096B like in nrf
 void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t offset,
-				  const uint8_t *buffer, const uint32_t size)
+	const uint8_t *buffer, const uint32_t size)
 {
 	int rc;
+
+	if (ctx_type == CONTEXT_FUOTA) {
+
+		uint32_t target_page = offset / FLASH_PAGE_SIZE;
+		uint32_t offset_in_page = offset % FLASH_PAGE_SIZE;
+
+		// If the new data belongs to a different page than the one we have in RAM...
+		if (target_page != current_page_in_buffer) {
+			// 1. Write the old, completed page to flash (if there is one).
+			flush_ota_page();
+
+			// 2. Prepare the RAM buffer for the new page.
+			current_page_in_buffer = target_page;
+			uint32_t read_addr = current_page_in_buffer * FLASH_PAGE_SIZE;
+
+			// This pre-loads the buffer with existing data, allowing us to modify it.
+			LOG_DBG("Switching to page %u, reading existing data from flash.", target_page);
+			int rc = flash_area_read(ota_flash_area, read_addr, ota_page_buffer, FLASH_PAGE_SIZE);
+			if (rc != 0) {
+				LOG_ERR("Failed to READ page %u! (%d)", target_page, rc);
+				// Even on a read fail, we continue with a potentially empty buffer
+				// as the erase/write cycle will fix it.
+			}
+		}
+
+
+		if ((offset_in_page + size) > FLASH_PAGE_SIZE) {
+			// --- THIS IS THE NEW LOGIC TO SPLIT THE CHUNK ---
+
+			// 1. Calculate how much data fits in the current page buffer.
+			uint32_t part1_size = FLASH_PAGE_SIZE - offset_in_page;
+			// 2. Copy the first part of the data to fill up the current buffer.
+			memcpy(ota_page_buffer + offset_in_page, buffer, part1_size);
+
+			// 3. The current page is now full, so write it to flash.
+			flush_ota_page();
+
+			// 4. Calculate the size of the remaining data.
+			uint32_t part2_size = size - part1_size;
+			// 5. Prepare the buffer for the *next* page.
+			current_page_in_buffer = target_page + 1;
+			memset(ota_page_buffer, 0xFF, FLASH_PAGE_SIZE);
+
+			// 6. Copy the remainder of the data to the beginning of the new page buffer.
+			//    Note the offset in the source `buffer` pointer.
+			memcpy(ota_page_buffer, buffer + part1_size, part2_size);
+
+		} else {
+			LOG_DBG("Writing %u bytes to ota_page_buffer + offset in page %d", size, offset_in_page);
+			memcpy(ota_page_buffer + offset_in_page, buffer, size);
+		}
+		return;
+	}
+
+
 	uint32_t real_offset;
 	uint32_t real_size;
 
@@ -343,8 +491,8 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 
 // We assume (FIXME:) that erases are aligned on sectors
 void smtc_modem_hal_context_flash_pages_erase(const modem_context_type_t ctx_type,
-						uint32_t offset,
-					      uint8_t nb_page)
+	uint32_t offset,
+	uint8_t nb_page)
 {
 	int rc;
 	uint32_t real_offset;

@@ -176,6 +176,22 @@ void smtc_modem_hal_interruptible_msleep(k_timeout_t timeout);
 
 void smtc_modem_hal_wake_up();
 
+
+/**
+ * @brief For setting up flash for frag transport
+ *
+ */
+void smtc_modem_hal_fuota_frag_init();
+
+/**
+ * @brief Handle frag transport finished operations
+ *
+ */
+void smtc_modem_hal_fuota_finished();
+
+
+
+
 #ifdef __cplusplus
 }
 #endif
