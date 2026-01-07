@@ -280,10 +280,22 @@ static uint32_t current_page_in_buffer = UINT32_MAX;
 
 static void flash_init(void)
 {
+
+	int err;
+	if (!ota_flash_area) {
+		current_page_in_buffer = UINT32_MAX; // Reset buffer state
+
+		err = flash_area_open(OTA_IMAGE_AREA, &ota_flash_area);
+		if (err != 0) {
+			LOG_ERR("Could not open flash area for ota (%d)", err);
+		}
+		LOG_INF("Opened flash area of size %d for ota", ota_flash_area->fa_size);
+	}
+
 	if (context_flash_area) {
 		return;
 	}
-	int err = flash_area_open(CONTEXT_PARTITION, &context_flash_area);
+	err = flash_area_open(CONTEXT_PARTITION, &context_flash_area);
 	if (err != 0) {
 		LOG_ERR("Could not open flash area for context (%d)", err);
 	}
@@ -349,14 +361,11 @@ void smtc_modem_hal_fuota_frag_init() {
 
 	current_page_in_buffer = UINT32_MAX; // Reset buffer state
 
-	int err = flash_area_open(OTA_IMAGE_AREA, &ota_flash_area);
-	if (err != 0) {
-		LOG_ERR("Could not open flash area for ota (%d)", err);
-	}
+	flash_init();
 	LOG_INF("Opened flash area of size %d for ota", ota_flash_area->fa_size);
 	LOG_DBG("Starting to erase flash area");
 
-	err = flash_area_erase(ota_flash_area, 0, ota_flash_area->fa_size);
+	flash_area_erase(ota_flash_area, 0, ota_flash_area->fa_size);
 
 	LOG_DBG("Finished erasing flash area");
 }
@@ -366,33 +375,49 @@ void smtc_modem_hal_context_restore(const modem_context_type_t ctx_type, uint32_
 	uint8_t *buffer, const uint32_t size)
 {
 	int rc;
-	uint32_t real_offset;
+
+	flash_init();
 
 	if (ctx_type == CONTEXT_FUOTA) {
-
-		 // Determine which page the requested data starts on
-		uint32_t target_page = offset / FLASH_PAGE_SIZE;
-
-		//  Check if the requested data is in our RAM buffer ---
-		if ((current_page_in_buffer != UINT32_MAX) && (target_page == current_page_in_buffer)) {
-
-			uint32_t offset_in_page = offset % FLASH_PAGE_SIZE;
-
-			if ((offset_in_page + size) <= FLASH_PAGE_SIZE) {
-				// LOG_DBG("Serving FUOTA read for %u bytes from RAM buffer (page %u)", size, target_page);
-				memcpy(buffer, ota_page_buffer + offset_in_page, size);
-				return;
-			}
-		}
-		// --- If not in the buffer, read from the physical flash ---
+		// 1. Always read from the physical flash first. 
+		// This ensures we capture all data that is NOT currently in the RAM buffer
+		// (i.e., data from previous pages or the part of the request that spills into the next page).
 		rc = flash_area_read(ota_flash_area, offset, buffer, size);
 		if (rc != 0) {
 			LOG_ERR("Failed to read buffer from ota flash area(%d)", rc);
+			// Depending on requirements, you might want to return here, 
+			// but we continue to at least serve what we have in RAM.
+		}
+
+		// 2. Check if the requested range overlaps with the current dirty RAM page.
+		// If it does, overwrite the stale flash data in 'buffer' with the fresh data from 'ota_page_buffer'.
+		if (current_page_in_buffer != UINT32_MAX) {
+
+			uint32_t page_start_addr = current_page_in_buffer * FLASH_PAGE_SIZE;
+			uint32_t page_end_addr = page_start_addr + FLASH_PAGE_SIZE;
+			uint32_t read_start_addr = offset;
+			uint32_t read_end_addr = offset + size;
+
+			// Check for Intersection: [read_start, read_end) OVERLAPS [page_start, page_end)
+			if ((read_start_addr < page_end_addr) && (read_end_addr > page_start_addr)) {
+
+				// Calculate the bounds of the overlap
+				uint32_t overlap_start = (read_start_addr > page_start_addr) ? read_start_addr : page_start_addr;
+				uint32_t overlap_end = (read_end_addr < page_end_addr) ? read_end_addr : page_end_addr;
+				uint32_t bytes_to_copy = overlap_end - overlap_start;
+
+				// Calculate offsets
+				uint32_t dest_offset = overlap_start - read_start_addr; // Where to write in the user's buffer
+				uint32_t src_offset = overlap_start - page_start_addr; // Where to read from the RAM page buffer
+
+				// LOG_DBG("Overlaying %u bytes from RAM buffer (offset %u)", bytes_to_copy, src_offset);
+				memcpy(buffer + dest_offset, ota_page_buffer + src_offset, bytes_to_copy);
+			}
 		}
 		return;
 	}
 
-	flash_init();
+	uint32_t real_offset;
 	real_offset = priv_hal_context_address(ctx_type, offset);
 	rc = flash_area_read(context_flash_area, real_offset, buffer, size);
 	return;
@@ -406,6 +431,7 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 	const uint8_t *buffer, const uint32_t size)
 {
 	int rc;
+	flash_init();
 
 	if (ctx_type == CONTEXT_FUOTA) {
 
@@ -433,7 +459,7 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 
 
 		if ((offset_in_page + size) > FLASH_PAGE_SIZE) {
-			// --- THIS IS THE NEW LOGIC TO SPLIT THE CHUNK ---
+			// --- LOGIC TO SPLIT THE CHUNK ---
 
 			// 1. Calculate how much data fits in the current page buffer.
 			uint32_t part1_size = FLASH_PAGE_SIZE - offset_in_page;
@@ -445,12 +471,25 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 
 			// 4. Calculate the size of the remaining data.
 			uint32_t part2_size = size - part1_size;
+
 			// 5. Prepare the buffer for the *next* page.
 			current_page_in_buffer = target_page + 1;
-			memset(ota_page_buffer, 0xFF, FLASH_PAGE_SIZE);
+
+			// --- FIX START ---
+			// DO NOT use memset. Read the existing page content to preserve previous writes.
+			uint32_t read_addr = current_page_in_buffer * FLASH_PAGE_SIZE;
+			LOG_DBG("Split overflow: Switching to page %u, reading existing data.", current_page_in_buffer);
+
+			// Read the next page from flash before modifying it
+			int rc = flash_area_read(ota_flash_area, read_addr, ota_page_buffer, FLASH_PAGE_SIZE);
+			if (rc != 0) {
+				LOG_ERR("Failed to READ page %u during split! (%d)", current_page_in_buffer, rc);
+				// Fallback to 0xFF only if read fails, though this is critical
+				memset(ota_page_buffer, 0xFF, FLASH_PAGE_SIZE);
+			}
+			// --- FIX END ---
 
 			// 6. Copy the remainder of the data to the beginning of the new page buffer.
-			//    Note the offset in the source `buffer` pointer.
 			memcpy(ota_page_buffer, buffer + part1_size, part2_size);
 
 		} else {
@@ -467,7 +506,6 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 	// shitty workaround because some 4-bytes writes will come while flash supports only 8
 	real_size = size + 8 - (size % 8);
 
-	flash_init();
 	real_offset = priv_hal_context_address(ctx_type, offset);
 
 	// read-erase-write
