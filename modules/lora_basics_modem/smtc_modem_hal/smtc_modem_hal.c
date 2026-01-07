@@ -280,7 +280,6 @@ static uint32_t current_page_in_buffer = UINT32_MAX;
 
 static void flash_init(void)
 {
-
 	int err;
 	if (!ota_flash_area) {
 		current_page_in_buffer = UINT32_MAX; // Reset buffer state
@@ -327,7 +326,6 @@ static uint32_t priv_hal_context_address(const modem_context_type_t ctx_type, ui
 // --- Helper function to flush the buffered page to flash ---
 static int flush_ota_page(void) {
 	int rc = 0;
-
 	if (current_page_in_buffer != UINT32_MAX) {
 		// Calculate the physical write address in the flash partition
 		uint32_t write_addr = current_page_in_buffer * FLASH_PAGE_SIZE;
@@ -362,7 +360,6 @@ void smtc_modem_hal_fuota_frag_init() {
 	current_page_in_buffer = UINT32_MAX; // Reset buffer state
 
 	flash_init();
-	LOG_INF("Opened flash area of size %d for ota", ota_flash_area->fa_size);
 	LOG_DBG("Starting to erase flash area");
 
 	flash_area_erase(ota_flash_area, 0, ota_flash_area->fa_size);
@@ -475,7 +472,6 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 			// 5. Prepare the buffer for the *next* page.
 			current_page_in_buffer = target_page + 1;
 
-			// --- FIX START ---
 			// DO NOT use memset. Read the existing page content to preserve previous writes.
 			uint32_t read_addr = current_page_in_buffer * FLASH_PAGE_SIZE;
 			LOG_DBG("Split overflow: Switching to page %u, reading existing data.", current_page_in_buffer);
@@ -487,7 +483,6 @@ void smtc_modem_hal_context_store(const modem_context_type_t ctx_type, uint32_t 
 				// Fallback to 0xFF only if read fails, though this is critical
 				memset(ota_page_buffer, 0xFF, FLASH_PAGE_SIZE);
 			}
-			// --- FIX END ---
 
 			// 6. Copy the remainder of the data to the beginning of the new page buffer.
 			memcpy(ota_page_buffer, buffer + part1_size, part2_size);
