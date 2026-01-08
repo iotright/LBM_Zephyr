@@ -356,15 +356,39 @@ void smtc_modem_hal_fuota_finished() {
 
 void smtc_modem_hal_fuota_frag_init() {
 
-
+	int err = 0;
+	off_t offset;
+	size_t chunk_len;
 	current_page_in_buffer = UINT32_MAX; // Reset buffer state
 
 	flash_init();
-	LOG_DBG("Starting to erase flash area");
 
-	flash_area_erase(ota_flash_area, 0, ota_flash_area->fa_size);
+	LOG_DBG("Starting to erase flash area in chunks...");
 
-	LOG_DBG("Finished erasing flash area");
+	for (offset = 0; offset < ota_flash_area->fa_size; offset += FLASH_PAGE_SIZE) {
+
+		// Calculate the size of the next chunk (handle the last partial chunk if any)
+		chunk_len = FLASH_PAGE_SIZE;
+		if (offset + chunk_len > ota_flash_area->fa_size) {
+			chunk_len = ota_flash_area->fa_size - offset;
+		}
+
+		err = flash_area_erase(ota_flash_area, offset, chunk_len);
+		if (err != 0) {
+			LOG_ERR("Failed to erase at offset %ld (err: %d)", offset, err);
+			break;
+		}
+
+		// CRITICAL: Yield to the scheduler!
+		k_sleep(K_MSEC(10));
+
+		//  Print progress every ~40KB 
+		if (offset % (FLASH_PAGE_SIZE * 10) == 0) {
+			LOG_DBG("Erased %ld / %u bytes", offset, ota_flash_area->fa_size);
+		}
+	}
+
+	LOG_INF("Finished erasing flash area successfully");
 }
 
 
