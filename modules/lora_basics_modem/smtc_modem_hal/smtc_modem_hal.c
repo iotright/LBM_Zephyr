@@ -725,16 +725,17 @@ void smtc_modem_hal_irq_reset_radio_irq(void)
 	lora_transceiver_board_enable_interrupt(prv_transceiver_dev);
 }
 
-void smtc_modem_hal_radio_irq_clear_pending(void)
-{
-	prv_modem_irq_pending_while_disabled = false;
-	prv_radio_irq_pending_while_disabled = false;
-}
 
 void smtc_modem_hal_start_radio_tcxo(void)
 {
 	/* We only support TCXO's that are wired to the transceiver. In such cases, this function must be
 	 * empty. See 5.25 of the porting guide. */
+}
+
+bool smtc_modem_external_stack_currently_use_radio(void)
+{
+   // return false if the radio is available for the lbm stack
+	return false;
 }
 
 void smtc_modem_hal_stop_radio_tcxo(void)
